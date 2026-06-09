@@ -1,11 +1,11 @@
 # Sonido estéreo y ficheros WAVE
 
-## Nom i cognoms
+## Pol Ramirez Sanchez
 
 > [!Important]
 > Introduzca a continuación su nombre y apellidos:
 >
-> Fulano Mengano Zutano
+> Pol Ramirez Sanchez
 
 ## Aviso Importante
 
@@ -207,12 +207,130 @@ para que se realice el realce sintáctico en Python del mismo (no vale insertar 
 pantalla, debe hacerse en formato *markdown*).
 
 ##### Código de `estereo2mono()`
+```python
+def estereo2mono(ficEste, ficMono, canal=2):
+    with open(ficEste, "rb") as f_in, open(ficMono, "wb") as f_out:
+        cab = leer_cabecera(f_in)
+        if cab["NumChannels"] != 2 or cab["BitsPerSample"] != 16:
+            raise ValueError(
+                "Se requiere un archivo estéreo de entrada de 16 bits."
+            )
+
+        datos_raw = f_in.read(cab["Subchunk2Size"])
+        muestras = struct.unpack(f"<{len(datos_raw) // 2}h", datos_raw)
+
+        ch_izq = muestras[0::2]
+        ch_der = muestras[1::2]
+
+        if canal == 0:
+            muestras_mono = ch_izq
+        elif canal == 1:
+            muestras_mono = ch_der
+        elif canal == 2:
+            muestras_mono = [(l + r) // 2 for l, r in zip(ch_izq, ch_der)]
+        elif canal == 3:
+            muestras_mono = [(l - r) // 2 for l, r in zip(ch_izq, ch_der)]
+
+        escribir_cabecera(
+            f_out,
+            num_canales=1,
+            sample_rate=cab["SampleRate"],
+            bits_per_sample=16,
+            num_muestras_canal=len(muestras_mono),
+        )
+        f_out.write(struct.pack(f"<{len(muestras_mono)}h", *muestras_mono))
+```
 
 ##### Código de `mono2estereo()`
+```python
+def mono2estereo(ficIzq, ficDer, ficEste):
+    with open(ficIzq, "rb") as f_izq, open(ficDer, "rb") as f_der, open(
+        ficEste, "wb"
+    ) as f_out:
+        cab_izq = leer_cabecera(f_izq)
+        cab_der = leer_cabecera(f_der)
 
+        raw_izq = f_izq.read(cab_izq["Subchunk2Size"])
+        raw_der = f_der.read(cab_der["Subchunk2Size"])
+
+        m_izq = struct.unpack(f"<{len(raw_izq) // 2}h", raw_izq)
+        m_der = struct.unpack(f"<{len(raw_der) // 2}h", raw_der)
+
+        min_len = min(len(m_izq), len(m_der))
+        muestras_estereo = [
+            val for par in zip(m_izq[:min_len], m_der[:min_len]) for val in par
+        ]
+
+        escribir_cabecera(
+            f_out,
+            num_canales=2,
+            sample_rate=cab_izq["SampleRate"],
+            bits_per_sample=16,
+            num_muestras_canal=min_len,
+        )
+        f_out.write(struct.pack(f"<{len(muestras_estereo)}h", *muestras_estereo))
+```
 ##### Código de `codEstereo()`
+```python
+def codEstereo(ficEste, ficCod):
+    with open(ficEste, "rb") as f_in, open(ficCod, "wb") as f_out:
+        cab = leer_cabecera(f_in)
+        datos_raw = f_in.read(cab["Subchunk2Size"])
+        muestras = struct.unpack(f"<{len(datos_raw) // 2}h", datos_raw)
 
+        ch_izq = muestras[0::2]
+        ch_der = muestras[1::2]
+
+        S = [(l + r) // 2 for l, r in zip(ch_izq, ch_der)]
+        D = [(l - r) // 2 for l, r in zip(ch_izq, ch_der)]
+
+        # --- LÍNEA CORREGIDA ---
+        # 1. Creamos el valor de 32 bits sin signo (pueden salir valores grandes)
+        valores_raw = [((s & 0xFFFF) << 16) | (d & 0xFFFF) for s, d in zip(S, D)]
+        
+        # 2. Forzamos a que Python los interprete en el rango con signo (-2^31 a 2^31 - 1)
+        # Si el número supera 2147483647, le restamos 2^32 para que pase a su equivalente negativo.
+        muestras_32 = [val if val < 0x80000000 else val - 0x100000000 for val in valores_raw]
+        # -----------------------
+
+        escribir_cabecera(
+            f_out,
+            num_canales=1,
+            sample_rate=cab["SampleRate"],
+            bits_per_sample=32,
+            num_muestras_canal=len(muestras_32),
+        )
+        f_out.write(struct.pack(f"<{len(muestras_32)}i", *muestras_32))
+```
 ##### Código de `decEstereo()`
+```python
+
+def decEstereo(ficCod, ficEste):
+    with open(ficCod, "rb") as f_in, open(ficEste, "wb") as f_out:
+        cab = leer_cabecera(f_in)
+        datos_raw = f_in.read(cab["Subchunk2Size"])
+        muestras_32 = struct.unpack(f"<{len(datos_raw) // 4}i", datos_raw)
+
+        S_raw = [(val >> 16) & 0xFFFF for val in muestras_32]
+        D_raw = [val & 0xFFFF for val in muestras_32]
+
+        S = [struct.unpack("<h", struct.pack("<H", s))[0] for s in S_raw]
+        D = [struct.unpack("<h", struct.pack("<H", d))[0] for d in D_raw]
+
+        ch_izq = [s + d for s, d in zip(S, D)]
+        ch_der = [s - d for s, d in zip(S, D)]
+
+        muestras_estereo = [val for par in zip(ch_izq, ch_der) for val in par]
+
+        escribir_cabecera(
+            f_out,
+            num_canales=2,
+            sample_rate=cab["SampleRate"],
+            bits_per_sample=16,
+            num_muestras_canal=len(S),
+        )
+        f_out.write(struct.pack(f"<{len(muestras_estereo)}h", *muestras_estereo))
+```
 
 #### Subida del resultado al repositorio GitHub y *pull-request*
 
